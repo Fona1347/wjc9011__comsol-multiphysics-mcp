@@ -1,0 +1,475 @@
+{
+  "model_file": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\micromixer_fixed_single_io_20260521_033038.mph",
+  "model_name": "micromixer_fixed_single_io_20260521_033038",
+  "components": [
+    "comp1"
+  ],
+  "geometries": [
+    "geom1"
+  ],
+  "physics": [
+    "spf"
+  ],
+  "physics_features": [
+    {
+      "tag": "fp1",
+      "label": "流体属性 1",
+      "type": "FluidProperties",
+      "selection": [
+        1,
+        2,
+        3
+      ],
+      "selection_attempt_errors": {}
+    },
+    {
+      "tag": "init1",
+      "label": "初始值 1",
+      "type": "init",
+      "selection": [
+        1,
+        2,
+        3
+      ],
+      "selection_attempt_errors": {}
+    },
+    {
+      "tag": "wallbc1",
+      "label": "壁 1",
+      "type": "WallBC",
+      "selection": [
+        2,
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14,
+        15,
+        17,
+        18
+      ],
+      "selection_attempt_errors": {}
+    },
+    {
+      "tag": "grav1",
+      "label": "重力 1",
+      "type": "Gravity",
+      "selection": [],
+      "selection_attempt_errors": {}
+    },
+    {
+      "tag": "rtfr1",
+      "label": "旋转坐标系 1",
+      "type": "RotatingFrameFD",
+      "selection": [],
+      "selection_attempt_errors": {}
+    },
+    {
+      "tag": "dcont1",
+      "label": "流动连续性 1",
+      "type": "Continuity",
+      "selection": [],
+      "selection_attempt_errors": {}
+    },
+    {
+      "tag": "inl1",
+      "label": "Inlet 1 (Boundary 1)",
+      "type": "InletBoundary",
+      "selection": [
+        1
+      ],
+      "selection_attempt_errors": {}
+    },
+    {
+      "tag": "out1",
+      "label": "Outlet (Boundary 2)",
+      "type": "OutletBoundary",
+      "selection": [
+        6
+      ],
+      "selection_attempt_errors": {}
+    }
+  ],
+  "geometry": {
+    "tag": "geom1",
+    "label": "几何 1",
+    "domains": 3,
+    "boundaries": 18,
+    "edges": 34,
+    "vertices": 20,
+    "boundary_adjacency": {
+      "1": {
+        "getAdj_2_0": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "getAdj_2_1": [
+          1,
+          2,
+          4,
+          6
+        ],
+        "getAdj_2_3": [
+          1
+        ]
+      },
+      "2": {
+        "getAdj_2_0": [
+          1,
+          2,
+          9,
+          10
+        ],
+        "getAdj_2_1": [
+          1,
+          3,
+          5,
+          17
+        ],
+        "getAdj_2_3": [
+          1
+        ]
+      },
+      "3": {
+        "getAdj_2_0": [
+          1,
+          3,
+          9,
+          11
+        ],
+        "getAdj_2_1": [
+          2,
+          3,
+          7,
+          18
+        ],
+        "getAdj_2_3": [
+          1
+        ]
+      },
+      "4": {
+        "getAdj_2_0": [
+          2,
+          4,
+          10,
+          12
+        ],
+        "getAdj_2_1": [
+          4,
+          5,
+          8,
+          20
+        ],
+        "getAdj_2_3": [
+          1
+        ]
+      },
+      "5": {
+        "getAdj_2_0": [
+          3,
+          4,
+          11,
+          12
+        ],
+        "getAdj_2_1": [
+          6,
+          7,
+          8,
+          22
+        ],
+        "getAdj_2_3": [
+          1
+        ]
+      },
+      "6": {
+        "getAdj_2_0": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "getAdj_2_1": [
+          9,
+          10,
+          12,
+          14
+        ],
+        "getAdj_2_3": [
+          2
+        ]
+      },
+      "7": {
+        "getAdj_2_0": [
+          5,
+          6,
+          13,
+          14
+        ],
+        "getAdj_2_1": [
+          9,
+          11,
+          13,
+          25
+        ],
+        "getAdj_2_3": [
+          2
+        ]
+      },
+      "8": {
+        "getAdj_2_0": [
+          5,
+          7,
+          13,
+          15
+        ],
+        "getAdj_2_1": [
+          10,
+          11,
+          15,
+          26
+        ],
+        "getAdj_2_3": [
+          2
+        ]
+      },
+      "9": {
+        "getAdj_2_0": [
+          6,
+          8,
+          14,
+          16
+        ],
+        "getAdj_2_1": [
+          12,
+          13,
+          16,
+          27
+        ],
+        "getAdj_2_3": [
+          2
+        ]
+      },
+      "10": {
+        "getAdj_2_0": [
+          7,
+          8,
+          15,
+          16
+        ],
+        "getAdj_2_1": [
+          14,
+          15,
+          16,
+          28
+        ],
+        "getAdj_2_3": [
+          2
+        ]
+      },
+      "11": {
+        "getAdj_2_0": [
+          9,
+          10,
+          11,
+          12
+        ],
+        "getAdj_2_1": [
+          17,
+          18,
+          20,
+          22
+        ],
+        "getAdj_2_3": [
+          1,
+          3
+        ]
+      },
+      "12": {
+        "getAdj_2_0": [
+          9,
+          10,
+          17,
+          18
+        ],
+        "getAdj_2_1": [
+          17,
+          19,
+          21,
+          31
+        ],
+        "getAdj_2_3": [
+          3
+        ]
+      },
+      "13": {
+        "getAdj_2_0": [
+          9,
+          11,
+          13,
+          15,
+          17,
+          19
+        ],
+        "getAdj_2_1": [
+          18,
+          19,
+          23,
+          26,
+          29,
+          32
+        ],
+        "getAdj_2_3": [
+          3
+        ]
+      },
+      "14": {
+        "getAdj_2_0": [
+          10,
+          12,
+          14,
+          16,
+          18,
+          20
+        ],
+        "getAdj_2_1": [
+          20,
+          21,
+          24,
+          27,
+          30,
+          33
+        ],
+        "getAdj_2_3": [
+          3
+        ]
+      },
+      "15": {
+        "getAdj_2_0": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "getAdj_2_1": [
+          22,
+          23,
+          24,
+          25
+        ],
+        "getAdj_2_3": [
+          3
+        ]
+      },
+      "16": {
+        "getAdj_2_0": [
+          13,
+          14,
+          15,
+          16
+        ],
+        "getAdj_2_1": [
+          25,
+          26,
+          27,
+          28
+        ],
+        "getAdj_2_3": [
+          2,
+          3
+        ]
+      },
+      "17": {
+        "getAdj_2_0": [
+          15,
+          16,
+          19,
+          20
+        ],
+        "getAdj_2_1": [
+          28,
+          29,
+          30,
+          34
+        ],
+        "getAdj_2_3": [
+          3
+        ]
+      },
+      "18": {
+        "getAdj_2_0": [
+          17,
+          18,
+          19,
+          20
+        ],
+        "getAdj_2_1": [
+          31,
+          32,
+          33,
+          34
+        ],
+        "getAdj_2_3": [
+          3
+        ]
+      }
+    },
+    "boundary_vertex_candidates": {},
+    "method_errors": {},
+    "measure_methods": [
+      "active",
+      "author",
+      "comments",
+      "dateCreated",
+      "dateModified",
+      "docMarker",
+      "equals",
+      "getAPIEngine",
+      "getArea",
+      "getBoundaryArea",
+      "getBoundaryVolume",
+      "getBoundingBox",
+      "getClass",
+      "getContainer",
+      "getDisplayString",
+      "getEdgeAngle",
+      "getLength",
+      "getModelID",
+      "getNEntities",
+      "getNFiniteVoids",
+      "getObjectID",
+      "getObjectLocation",
+      "getPerimeter",
+      "getVolume",
+      "getVtxCoord",
+      "getVtxDistance",
+      "hashCode",
+      "help",
+      "icon",
+      "isActive",
+      "isactive",
+      "label",
+      "lastModifiedBy",
+      "model",
+      "name",
+      "notify",
+      "notifyAll",
+      "resetAuthor",
+      "resolveModelPath",
+      "scope",
+      "selection",
+      "tag",
+      "timeCreated",
+      "timeModified",
+      "toString",
+      "version",
+      "wait"
+    ]
+  }
+}

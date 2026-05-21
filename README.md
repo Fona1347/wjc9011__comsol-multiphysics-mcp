@@ -129,8 +129,9 @@ comsol_mcp/
 │   │   ├── session.py               # COMSOL session management (start/stop/status)
 │   │   ├── model.py                 # Model CRUD + versioning
 │   │   ├── parameters.py            # Parameter management + sweeps
-│   │   ├── geometry.py              # Geometry creation (block/cylinder/sphere)
+│   │   ├── geometry.py              # Geometry creation + topology analysis
 │   │   ├── physics.py               # Physics interfaces + boundary conditions
+│   │   ├── topology_utils.py        # Pure topology semantics + boundary-plan helpers
 │   │   ├── mesh.py                  # Mesh generation
 │   │   ├── study.py                 # Study creation + solving (sync/async)
 │   │   └── results.py               # Results evaluation + export
@@ -203,7 +204,7 @@ comsol_mcp/
 | `param_sweep_setup` | Setup parametric sweep |
 | `param_description` | Get/set description    |
 
-### Geometry (14)
+### Geometry (16)
 
 | Tool                            | Description              |
 | ------------------------------- | ------------------------ |
@@ -221,8 +222,10 @@ comsol_mcp/
 | `geometry_build`              | Build geometry           |
 | `geometry_list_features`      | List features            |
 | `geometry_get_boundaries`     | Get boundary numbers     |
+| `geometry_analyze_topology`   | Analyze domains/boundaries/edges/vertices |
+| `geometry_classify_semantics` | Classify boundary semantic candidates |
 
-### Physics (17)
+### Physics (20)
 
 | Tool                               | Description                  |
 | ---------------------------------- | ---------------------------- |
@@ -243,6 +246,9 @@ comsol_mcp/
 | `physics_setup_heat_boundaries`  | Configure heat boundaries    |
 | `physics_interactive_setup_flow` | Interactive flow BC setup    |
 | `physics_boundary_selection`     | Generic boundary setup       |
+| `physics_recommend_boundary_plan` | Recommend non-mutating BC plan |
+| `physics_validate_boundary_plan`  | Validate BC plan before apply |
+| `physics_apply_boundary_plan`     | Apply a validated BC plan     |
 
 ### Mesh (3)
 
@@ -347,6 +353,36 @@ python client_script/create_micromixer_auto.py
 ```
 
 **Results**: Velocity distribution, concentration mixing profile
+
+### Case 3: Cube Topology Acceptance
+
+Deterministic geometry-recognition smoke test for the topology analyzer.
+
+**Geometry**: 1 m x 1 m x 1 m cube.
+
+```python
+# Key checks:
+# 1. Build a single 3D Block in COMSOL
+# 2. Export GeometryGraph through geometry topology helpers
+# 3. Verify 1 domain, 6 boundaries/faces, 12 edges, 8 vertices
+# 4. Verify each face has 4 edges/vertices and belongs to domain 1
+# 5. Verify min/max x/y/z plane tags without relying on COMSOL boundary numbering
+```
+
+**Script**: `client_script/create_cube_topology_acceptance.py`
+
+**Run**:
+
+```bash
+cd /path/to/comsol-mcp
+python client_script/create_cube_topology_acceptance.py --offline-fixture
+python client_script/create_cube_topology_acceptance.py --force-comsol --timeout 300
+```
+
+**Results**: JSON topology reports under `comsol_models/cube_topology_acceptance/`.
+The default mode runs a COMSOL startup preflight first. Use `--offline-fixture`
+inside restricted agent/sandbox environments; use `--force-comsol` only when
+COMSOL startup permissions and licensing are known to work.
 
 ## Model Versioning
 

@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 knowledge_base/
+.comsol_runtime/
+dev_log/comsol_start_timeout_*.json
+.pytest_cache

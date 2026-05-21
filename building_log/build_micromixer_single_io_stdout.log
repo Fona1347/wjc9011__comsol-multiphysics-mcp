@@ -1,0 +1,78 @@
+[1] Starting COMSOL client
+[2] Loading partial: E:\hycodespace\Models\comsol_database\micromixer_fixed\partial_micromixer_fixed_20260520_225902.mph
+    Geometry: {'domains': 3, 'boundaries': 18, 'edges': 34, 'vertices': 20}
+[3] Creating mesh
+[4] Creating water material
+[5] Creating Laminar Flow physics
+[6] Configuring inlet/outlet boundaries
+[7] Creating stationary study
+[8] Solving stationary study
+[9] Creating default velocity and pressure plots
+[10] Evaluating velocity and pressure
+[11] Saving model
+{
+  "timestamp": "20260521_033038",
+  "source_partial": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\partial_micromixer_fixed_20260520_225902.mph",
+  "model_name": "micromixer_fixed_single_io",
+  "steps": [
+    "comsol_client_started",
+    "partial_loaded",
+    "mesh_created",
+    "water_material_created",
+    "laminar_flow_created",
+    "flow_boundaries_configured",
+    "stationary_study_created",
+    "stationary_study_solved",
+    "velocity_pressure_plots_created",
+    "model_saved"
+  ],
+  "artifacts": {
+    "version_mph": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\micromixer_fixed_single_io_20260521_033038.mph",
+    "latest_mph": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\micromixer_fixed_single_io_latest.mph",
+    "run_log": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\complete_run_log_20260521_033038.json",
+    "error_log": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\complete_error_20260521_033038.json"
+  },
+  "current_step": "[11] Saving model",
+  "heartbeat_time": "2026-05-21T03:31:43",
+  "geometry": {
+    "domains": 3,
+    "boundaries": 18,
+    "edges": 34,
+    "vertices": 20
+  },
+  "boundary_config": {
+    "configuration": "single_inlet_single_outlet_non_adjacent",
+    "inlets": [
+      1
+    ],
+    "outlets": [
+      2
+    ],
+    "inlet_velocity": "v_in",
+    "outlet_pressure": "0",
+    "selection_note": "Boundary 1 and boundary 2 are used as the single inlet/outlet pair; boundary 3 is no longer an inlet.",
+    "inlet_1_property": "U0in",
+    "outlet_property": "p0"
+  },
+  "plots": [
+    "pg_vel",
+    "pg_pres"
+  ],
+  "evaluations": {
+    "spf.U": {
+      "unit": "m/s",
+      "min": 0.0,
+      "max": 0.017287444548595095,
+      "mean": 0.0001800154312136567,
+      "count": 103879
+    },
+    "p": {
+      "unit": "Pa",
+      "min": -0.06420241891033815,
+      "max": 17.6464606574665,
+      "mean": 0.10362383121321841,
+      "count": 103879
+    }
+  },
+  "status": "success"
+}

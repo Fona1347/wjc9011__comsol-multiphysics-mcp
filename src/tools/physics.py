@@ -3,7 +3,13 @@
 from typing import Optional, Sequence
 from mcp.server.fastmcp import FastMCP
 
+from .geometry import _analyze_geometry_topology
 from .session import session_manager
+from .topology_utils import (
+    classify_semantics,
+    recommend_boundary_plan,
+    validate_boundary_plan,
+)
 
 
 PHYSICS_INTERFACES = {
@@ -350,6 +356,50 @@ def _resolve_java_target(model, target: str):
         "Unknown target. Use one of: model, component:<tag>, geometry:<tag>, "
         "physics:<tag-or-label>, study:<tag>."
     )
+
+
+def _topology_for_plan(
+    model,
+    plan: dict,
+    topology: Optional[dict] = None,
+) -> dict:
+    """Resolve topology for validation/recommendation helpers."""
+    if topology:
+        return topology
+    component_name = plan.get("component", "comp1")
+    geometry_name = plan.get("geometry", "geom1")
+    return _analyze_geometry_topology(model, geometry_name, component_name)
+
+
+def _create_boundary_feature(physics, feature: dict) -> dict:
+    """Create one COMSOL physics boundary feature from a plan entry."""
+    requested_tag = feature.get("feature_tag") or "bc_auto"
+    existing = set(_java_tags(physics.feature()))
+    tag = requested_tag if requested_tag not in existing else _next_feature_tag(physics, "bc")
+    feature_type = feature.get("type", "")
+    bc = physics.create(tag, feature_type)
+    boundary_ids = [int(boundary_id) for boundary_id in feature.get("boundary_ids", [])]
+    bc.selection().set(boundary_ids)
+
+    property_errors = {}
+    for prop_name, prop_value in (feature.get("properties") or {}).items():
+        try:
+            bc.set(prop_name, prop_value)
+        except Exception as exc:
+            property_errors[prop_name] = str(exc)
+
+    try:
+        bc.label(f"{feature_type} ({boundary_ids})")
+    except Exception:
+        pass
+
+    return {
+        "tag": str(bc.tag()),
+        "type": feature_type,
+        "boundary_ids": boundary_ids,
+        "properties": feature.get("properties") or {},
+        "property_errors": property_errors,
+    }
 
 
 def _probe_geometry_entities(model, geometry_name: Optional[str] = None) -> dict:
@@ -1453,6 +1503,131 @@ def register_physics_tools(mcp: FastMCP) -> None:
             return {"success": False, "error": f"Failed to setup heat boundaries: {str(e)}"}
 
     @mcp.tool()
+    def physics_recommend_boundary_plan(
+        physics_tag: str,
+        intent: Optional[dict] = None,
+        component_name: str = "comp1",
+        geometry_name: str = "geom1",
+        topology: Optional[dict] = None,
+        semantics: Optional[dict] = None,
+        model_name: Optional[str] = None
+    ) -> dict:
+        """
+        Recommend a non-mutating boundary condition plan.
+
+        The returned BoundaryPlan is not applied to COMSOL. Validate it with
+        physics_validate_boundary_plan before calling physics_apply_boundary_plan.
+        """
+        model = session_manager.get_model(model_name)
+        if model is None and topology is None:
+            return {
+                "success": False,
+                "error": f"Model not found: {model_name or 'no current model'}"
+            }
+
+        try:
+            resolved_intent = dict(intent or {})
+            resolved_intent.setdefault("component", component_name)
+            resolved_intent.setdefault("geometry", geometry_name)
+            if topology is None:
+                topology = _analyze_geometry_topology(model, geometry_name, component_name)
+                if not topology.get("success"):
+                    return topology
+            if semantics is None:
+                semantics = classify_semantics(topology)
+
+            plan = recommend_boundary_plan(physics_tag, resolved_intent, topology, semantics)
+            validation = validate_boundary_plan(plan, topology)
+            plan["validation"] = validation
+            plan["requires_user_confirmation"] = validation["status"] == "needs_confirmation"
+            return {"success": True, "plan": plan, "semantics_summary": semantics.get("summary", {})}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to recommend boundary plan: {str(e)}"}
+
+    @mcp.tool()
+    def physics_validate_boundary_plan(
+        plan: dict,
+        topology: Optional[dict] = None,
+        model_name: Optional[str] = None
+    ) -> dict:
+        """
+        Validate a BoundaryPlan without modifying COMSOL.
+
+        Returns status valid, needs_confirmation, or invalid plus errors and warnings.
+        """
+        model = session_manager.get_model(model_name)
+        if topology is None and model is None:
+            return {
+                "success": False,
+                "error": f"Model not found: {model_name or 'no current model'}"
+            }
+
+        try:
+            if topology is None:
+                topology = _topology_for_plan(model, plan)
+                if not topology.get("success"):
+                    return topology
+            validation = validate_boundary_plan(plan, topology)
+            return {"success": True, "validation": validation}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to validate boundary plan: {str(e)}"}
+
+    @mcp.tool()
+    def physics_apply_boundary_plan(
+        plan: dict,
+        topology: Optional[dict] = None,
+        require_valid: bool = True,
+        model_name: Optional[str] = None
+    ) -> dict:
+        """
+        Apply a validated BoundaryPlan to a COMSOL physics interface.
+
+        By default, invalid or confirmation-required plans are rejected.
+        """
+        model = session_manager.get_model(model_name)
+        if model is None:
+            return {
+                "success": False,
+                "error": f"Model not found: {model_name or 'no current model'}"
+            }
+
+        try:
+            if topology is None:
+                topology = _topology_for_plan(model, plan)
+                if not topology.get("success"):
+                    return topology
+            validation = validate_boundary_plan(plan, topology)
+            if require_valid and validation.get("status") != "valid":
+                return {
+                    "success": False,
+                    "error": "Boundary plan is not valid.",
+                    "validation": validation,
+                }
+
+            comp, physics, error = _resolve_physics_interface(
+                model,
+                physics_tag=plan.get("physics_tag"),
+                component_name=plan.get("component"),
+            )
+            if error:
+                return error
+
+            applied = []
+            for feature in plan.get("features", []):
+                applied.append(_create_boundary_feature(physics, feature))
+
+            return {
+                "success": True,
+                "model": model.name(),
+                "component": str(comp.tag()),
+                "physics": str(physics.tag()),
+                "applied": applied,
+                "validation": validation,
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Failed to apply boundary plan: {str(e)}"}
+
+    @mcp.tool()
     def physics_boundary_selection(
         physics_name: Optional[str] = None,
         boundary_condition_type: str = "",
@@ -1504,10 +1679,6 @@ def register_physics_tools(mcp: FastMCP) -> None:
                 "success": False,
                 "error": f"Model not found: {model_name or 'no current model'}"
             }
-        if not inlet_boundaries:
-            return {"success": False, "error": "inlet_boundaries is required."}
-        if not outlet_boundaries:
-            return {"success": False, "error": "outlet_boundaries is required."}
         if not boundary_condition_type:
             return {"success": False, "error": "boundary_condition_type is required."}
         if not boundary_numbers:

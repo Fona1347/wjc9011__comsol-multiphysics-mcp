@@ -3,6 +3,14 @@
 from typing import Optional, Sequence
 from mcp.server.fastmcp import FastMCP
 
+from .topology_utils import (
+    as_float_list,
+    as_int_list,
+    bbox_from_points,
+    centroid_from_points,
+    classify_semantics,
+    enrich_topology,
+)
 from .session import session_manager
 
 
@@ -32,6 +40,163 @@ def _get_geometry_node(model, geometry_name: Optional[str], component_name: str 
         return geom, None
     except Exception as e:
         return None, f"Failed to get geometry: {str(e)}"
+
+
+def _java_method_names(obj, limit: int = 120) -> list[str]:
+    """Return a compact list of public Java method names."""
+    try:
+        return sorted({str(method.getName()) for method in obj.getClass().getMethods()})[:limit]
+    except Exception:
+        return []
+
+
+def _call_geom_adj(geom, from_dim: int, entity_id: int, to_dim: int, diagnostics: dict) -> list[int]:
+    """Call COMSOL getAdj and record failures without aborting topology analysis."""
+    key = f"getAdj({from_dim},{entity_id},{to_dim})"
+    try:
+        return as_int_list(geom.getAdj(from_dim, int(entity_id), to_dim))
+    except Exception as exc:
+        diagnostics.setdefault("method_errors", {})[key] = str(exc)
+        return []
+
+
+def _count_entities(geom, diagnostics: dict) -> dict:
+    counts = {}
+    for key, method_name in (
+        ("domains", "getNDomains"),
+        ("boundaries", "getNBoundaries"),
+        ("edges", "getNEdges"),
+        ("vertices", "getNVertices"),
+    ):
+        try:
+            counts[key] = int(getattr(geom, method_name)())
+        except Exception as exc:
+            counts[key] = 0
+            diagnostics.setdefault("method_errors", {})[method_name] = str(exc)
+    try:
+        counts["entities_by_dimension"] = as_int_list(geom.getNEntities())
+    except Exception as exc:
+        counts["entities_by_dimension"] = [
+            counts["vertices"],
+            counts["edges"],
+            counts["boundaries"],
+            counts["domains"],
+        ]
+        diagnostics.setdefault("method_errors", {})["getNEntities"] = str(exc)
+    return counts
+
+
+def _analyze_geometry_topology(
+    model,
+    geometry_name: Optional[str] = None,
+    component_name: str = "comp1",
+) -> dict:
+    """Build a COMSOL GeometryGraph from entity counts, adjacency, and vertices."""
+    geom, error = _get_geometry_node(model, geometry_name, component_name)
+    if error:
+        return {"success": False, "error": error}
+
+    try:
+        geom.run()
+    except Exception as exc:
+        return {"success": False, "error": f"Failed to build geometry: {str(exc)}"}
+
+    geometry_tag = str(geom.tag()) if hasattr(geom, "tag") else geometry_name
+    diagnostics = {
+        "java_class": type(geom).__name__,
+        "available_methods": _java_method_names(geom),
+        "method_errors": {},
+        "missing_fields": [],
+    }
+    try:
+        diagnostics["java_class"] = str(geom.getClass().getName())
+    except Exception:
+        pass
+
+    counts = _count_entities(geom, diagnostics)
+    vertices = {}
+    for vertex_id in range(1, counts["vertices"] + 1):
+        coord = []
+        try:
+            coord = as_float_list(geom.getVtxCoord(vertex_id))
+        except Exception as exc:
+            diagnostics["method_errors"][f"getVtxCoord({vertex_id})"] = str(exc)
+        if not coord:
+            diagnostics["missing_fields"].append(f"vertex {vertex_id} coord")
+        vertices[str(vertex_id)] = {"id": vertex_id, "coord": coord}
+
+    def coords_for(ids: Sequence[int]) -> list[list[float]]:
+        return [
+            vertices.get(str(vertex_id), {}).get("coord")
+            for vertex_id in ids
+            if vertices.get(str(vertex_id), {}).get("coord")
+        ]
+
+    edges = {}
+    for edge_id in range(1, counts["edges"] + 1):
+        edge_vertices = _call_geom_adj(geom, 1, edge_id, 0, diagnostics)
+        edge_points = coords_for(edge_vertices)
+        edges[str(edge_id)] = {
+            "id": edge_id,
+            "vertices": edge_vertices,
+            "boundaries": _call_geom_adj(geom, 1, edge_id, 2, diagnostics),
+            "adjacent_domains": _call_geom_adj(geom, 1, edge_id, 3, diagnostics),
+            "bbox": bbox_from_points(edge_points),
+            "centroid": centroid_from_points(edge_points),
+        }
+
+    boundaries = {}
+    for boundary_id in range(1, counts["boundaries"] + 1):
+        boundary_vertices = _call_geom_adj(geom, 2, boundary_id, 0, diagnostics)
+        boundary_edges = _call_geom_adj(geom, 2, boundary_id, 1, diagnostics)
+        boundary_domains = _call_geom_adj(geom, 2, boundary_id, 3, diagnostics)
+        boundary_points = coords_for(boundary_vertices)
+        boundary = {
+            "id": boundary_id,
+            "vertices": boundary_vertices,
+            "edges": boundary_edges,
+            "adjacent_domains": boundary_domains,
+            "bbox": bbox_from_points(boundary_points),
+            "centroid": centroid_from_points(boundary_points),
+            "area": "unknown",
+        }
+        if boundary["bbox"] is None:
+            diagnostics["missing_fields"].append(f"boundary {boundary_id} bbox")
+        boundaries[str(boundary_id)] = boundary
+
+    domains = {}
+    for domain_id in range(1, counts["domains"] + 1):
+        domain_boundaries = _call_geom_adj(geom, 3, domain_id, 2, diagnostics)
+        domain_vertices = _call_geom_adj(geom, 3, domain_id, 0, diagnostics)
+        domain_points = coords_for(domain_vertices)
+        domains[str(domain_id)] = {
+            "id": domain_id,
+            "vertices": domain_vertices,
+            "boundaries": domain_boundaries,
+            "bbox": bbox_from_points(domain_points),
+            "centroid": centroid_from_points(domain_points),
+            "volume": "unknown",
+        }
+
+    topology = {
+        "success": True,
+        "model": model.name(),
+        "component": component_name,
+        "geometry": geometry_tag,
+        "entities_by_dimension": counts["entities_by_dimension"],
+        "counts": {
+            "domains": counts["domains"],
+            "boundaries": counts["boundaries"],
+            "edges": counts["edges"],
+            "vertices": counts["vertices"],
+        },
+        "vertices": vertices,
+        "edges": edges,
+        "boundaries": boundaries,
+        "domains": domains,
+        "diagnostics": diagnostics,
+    }
+    return enrich_topology(topology)
 
 
 def register_geometry_tools(mcp: FastMCP) -> None:
@@ -705,3 +870,58 @@ def register_geometry_tools(mcp: FastMCP) -> None:
             }
         except Exception as e:
             return {"success": False, "error": f"Failed to list features: {str(e)}"}
+
+    @mcp.tool()
+    def geometry_analyze_topology(
+        geometry_name: Optional[str] = None,
+        component_name: str = "comp1",
+        model_name: Optional[str] = None
+    ) -> dict:
+        """
+        Analyze COMSOL 3D geometry topology.
+
+        Returns domains, boundaries, edges, vertices, entity adjacency, bounding
+        boxes, centroids, exterior/interface flags, and diagnostics. This tool
+        is the preferred geometry source before assigning boundary conditions.
+        """
+        model = session_manager.get_model(model_name)
+        if model is None:
+            return {
+                "success": False,
+                "error": f"Model not found: {model_name or 'no current model'}"
+            }
+        try:
+            return _analyze_geometry_topology(model, geometry_name, component_name)
+        except Exception as e:
+            return {"success": False, "error": f"Failed to analyze topology: {str(e)}"}
+
+    @mcp.tool()
+    def geometry_classify_semantics(
+        geometry_name: Optional[str] = None,
+        component_name: str = "comp1",
+        topology: Optional[dict] = None,
+        model_name: Optional[str] = None
+    ) -> dict:
+        """
+        Classify geometry entities into semantic boundary candidates.
+
+        If topology is omitted, this tool first calls geometry_analyze_topology.
+        It returns explainable candidates such as inlet/outlet/wall/interface.
+        """
+        if topology is None:
+            model = session_manager.get_model(model_name)
+            if model is None:
+                return {
+                    "success": False,
+                    "error": f"Model not found: {model_name or 'no current model'}"
+                }
+            topology = _analyze_geometry_topology(model, geometry_name, component_name)
+            if not topology.get("success"):
+                return topology
+        try:
+            result = classify_semantics(topology)
+            result["geometry"] = topology.get("geometry")
+            result["component"] = topology.get("component", component_name)
+            return result
+        except Exception as e:
+            return {"success": False, "error": f"Failed to classify semantics: {str(e)}"}

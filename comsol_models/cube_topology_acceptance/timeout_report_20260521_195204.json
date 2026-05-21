@@ -1,0 +1,26 @@
+{
+  "success": false,
+  "stage": "timeout",
+  "timeout_seconds": 20,
+  "command": [
+    "E:\\hycodespace\\Forks\\COMSOL_Multiphysics_MCP\\.venv\\python.exe",
+    "E:\\hycodespace\\Forks\\COMSOL_Multiphysics_MCP\\client_script\\create_cube_topology_acceptance.py",
+    "--worker"
+  ],
+  "stdout": "",
+  "stderr": "",
+  "cleanup": {
+    "command": [
+      "taskkill",
+      "/PID",
+      "51340",
+      "/T",
+      "/F"
+    ],
+    "returncode": 1,
+    "stdout": "",
+    "stderr": "ERROR: Access denied\n\n",
+    "communicate_timeout_after_kill": true
+  },
+  "message": "COMSOL acceptance worker exceeded timeout. This usually means mph.start(), COMSOL server startup, license checkout, or user-profile logging is blocked."
+}

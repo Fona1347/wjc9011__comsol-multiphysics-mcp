@@ -1,0 +1,14 @@
+{
+  "success": false,
+  "stage": "preflight_blocked",
+  "preflight": {
+    "success": false,
+    "log_dir": "C:\\Users\\Huayun\\.comsol\\v64\\tomcat\\logs",
+    "warnings": [],
+    "errors": [
+      "Cannot write COMSOL Tomcat log directory before mph.start().",
+      "[Errno 13] Permission denied: 'C:\\\\Users\\\\Huayun\\\\.comsol\\\\v64\\\\tomcat\\\\logs\\\\codex_preflight_8956.tmp'"
+    ]
+  },
+  "message": "COMSOL startup was not attempted because preflight detected an environment/permission issue. Use --force-comsol to bypass."
+}

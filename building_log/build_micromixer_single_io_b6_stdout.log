@@ -1,0 +1,78 @@
+[1] Starting COMSOL client
+[2] Loading partial: E:\hycodespace\Models\comsol_database\micromixer_fixed\partial_micromixer_fixed_20260520_225902.mph
+    Geometry: {'domains': 3, 'boundaries': 18, 'edges': 34, 'vertices': 20}
+[3] Creating mesh
+[4] Creating water material
+[5] Creating Laminar Flow physics
+[6] Configuring inlet/outlet boundaries
+[7] Creating stationary study
+[8] Solving stationary study
+[9] Creating default velocity and pressure plots
+[10] Evaluating velocity and pressure
+[11] Saving model
+{
+  "timestamp": "20260521_042614",
+  "source_partial": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\partial_micromixer_fixed_20260520_225902.mph",
+  "model_name": "micromixer_fixed_single_io_b6",
+  "steps": [
+    "comsol_client_started",
+    "partial_loaded",
+    "mesh_created",
+    "water_material_created",
+    "laminar_flow_created",
+    "flow_boundaries_configured",
+    "stationary_study_created",
+    "stationary_study_solved",
+    "velocity_pressure_plots_created",
+    "model_saved"
+  ],
+  "artifacts": {
+    "version_mph": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\micromixer_fixed_single_io_b6_20260521_042614.mph",
+    "latest_mph": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\micromixer_fixed_single_io_b6_latest.mph",
+    "run_log": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\complete_run_log_20260521_042614.json",
+    "error_log": "E:\\hycodespace\\Models\\comsol_database\\micromixer_fixed\\complete_error_20260521_042614.json"
+  },
+  "current_step": "[11] Saving model",
+  "heartbeat_time": "2026-05-21T04:27:23",
+  "geometry": {
+    "domains": 3,
+    "boundaries": 18,
+    "edges": 34,
+    "vertices": 20
+  },
+  "boundary_config": {
+    "configuration": "single_inlet_single_outlet_non_adjacent",
+    "inlets": [
+      1
+    ],
+    "outlets": [
+      6
+    ],
+    "inlet_velocity": "v_in",
+    "outlet_pressure": "0",
+    "selection_note": "Boundary 1 is the lower left branch end face; boundary 6 is the upper left branch end face. Boundary 2 is a side wall, not an outlet.",
+    "inlet_1_property": "U0in",
+    "outlet_property": "p0"
+  },
+  "plots": [
+    "pg_vel",
+    "pg_pres"
+  ],
+  "evaluations": {
+    "spf.U": {
+      "unit": "m/s",
+      "min": 0.0,
+      "max": 0.020010937744815847,
+      "mean": 0.0015672891230047537,
+      "count": 104507
+    },
+    "p": {
+      "unit": "Pa",
+      "min": -0.2257291698163849,
+      "max": 37.70354300391731,
+      "mean": 11.126011163729537,
+      "count": 104507
+    }
+  },
+  "status": "success"
+}
