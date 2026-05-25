@@ -32,18 +32,18 @@ def register_model_tools(mcp: FastMCP) -> None:
             Model info including name, file path, and version, or error message
         """
         if not session_manager.is_connected:
-            return {"success": False, "error": "No active COMSOL session. Start with comsol_start first."}
+            return session_manager.error("no_active_session", "No active COMSOL session. Start with comsol_start first.")
         
         client = session_manager.client
         if client is None:
-            return {"success": False, "error": "Client not available."}
+            return session_manager.error("no_active_session", "Client not available.")
         
         try:
             path = Path(file_path)
             if not path.exists():
-                return {"success": False, "error": f"File not found: {file_path}"}
+                return session_manager.error("file_not_found", f"File not found: {file_path}")
             if not path.suffix.lower() == ".mph":
-                return {"success": False, "error": f"File must be a .mph file: {file_path}"}
+                return session_manager.error("invalid_argument", f"File must be a .mph file: {file_path}")
             
             model = client.load(str(path.absolute()))
             name = session_manager.add_model(model)
@@ -53,18 +53,16 @@ def register_model_tools(mcp: FastMCP) -> None:
             
             version_info = parse_version_info(name)
             
-            return {
-                "success": True,
-                "model": {
+            model_info = {
                     "name": name,
                     "file": str(path.absolute()),
                     "comsol_version": model.version(),
                     "is_versioned": version_info is not None,
                     "version_info": version_info,
                 }
-            }
+            return session_manager.success("Model loaded.", data={"model": model_info}, model=model_info)
         except Exception as e:
-            return {"success": False, "error": f"Failed to load model: {str(e)}"}
+            return session_manager.error("comsol_api_error", f"Failed to load model: {str(e)}")
     
     @mcp.tool()
     def model_create(name: Optional[str] = None, set_current: bool = True) -> dict:
@@ -79,11 +77,11 @@ def register_model_tools(mcp: FastMCP) -> None:
             Model info including name, or error message
         """
         if not session_manager.is_connected:
-            return {"success": False, "error": "No active COMSOL session. Start with comsol_start first."}
+            return session_manager.error("no_active_session", "No active COMSOL session. Start with comsol_start first.")
         
         client = session_manager.client
         if client is None:
-            return {"success": False, "error": "Client not available."}
+            return session_manager.error("no_active_session", "Client not available.")
         
         try:
             model = client.create(name)
@@ -92,15 +90,13 @@ def register_model_tools(mcp: FastMCP) -> None:
             if set_current:
                 session_manager.set_current_model(model_name)
             
-            return {
-                "success": True,
-                "model": {
+            model_info = {
                     "name": model_name,
                     "is_new": True,
                 }
-            }
+            return session_manager.success("Model created.", data={"model": model_info}, model=model_info)
         except Exception as e:
-            return {"success": False, "error": f"Failed to create model: {str(e)}"}
+            return session_manager.error("comsol_api_error", f"Failed to create model: {str(e)}")
     
     @mcp.tool()
     def model_create_component(
@@ -122,22 +118,23 @@ def register_model_tools(mcp: FastMCP) -> None:
         """
         model = session_manager.get_model(model_name)
         if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
+            return session_manager.error(
+                "no_current_model",
+                f"Model not found: {model_name or 'no current model'}",
+            )
         
         try:
             jm = model.java
             comp = jm.component().create(component_name, True)
             
-            return {
-                "success": True,
-                "component": component_name,
-                "model": model.name(),
-            }
+            return session_manager.success(
+                "Component created.",
+                data={"component": component_name, "model": model.name()},
+                component=component_name,
+                model=model.name(),
+            )
         except Exception as e:
-            return {"success": False, "error": f"Failed to create component: {str(e)}"}
+            return session_manager.error("comsol_api_error", f"Failed to create component: {str(e)}")
     
     @mcp.tool()
     def model_list_components(
@@ -154,10 +151,10 @@ def register_model_tools(mcp: FastMCP) -> None:
         """
         model = session_manager.get_model(model_name)
         if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
+            return session_manager.error(
+                "no_current_model",
+                f"Model not found: {model_name or 'no current model'}",
+            )
         
         try:
             jm = model.java
@@ -177,7 +174,7 @@ def register_model_tools(mcp: FastMCP) -> None:
                 "count": len(components),
             }
         except Exception as e:
-            return {"success": False, "error": f"Failed to list components: {str(e)}"}
+            return session_manager.error("comsol_api_error", f"Failed to list components: {str(e)}")
     
     @mcp.tool()
     def model_save(
@@ -198,23 +195,24 @@ def register_model_tools(mcp: FastMCP) -> None:
         """
         model = session_manager.get_model(model_name)
         if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
+            return session_manager.error(
+                "no_current_model",
+                f"Model not found: {model_name or 'no current model'}",
+            )
         
         try:
             model.save(path=file_path, format=format)
             saved_path = file_path or model.file()
             
-            return {
-                "success": True,
-                "model": model.name(),
-                "saved_to": str(saved_path),
-                "format": format or "Comsol",
-            }
+            return session_manager.success(
+                "Model saved.",
+                data={"model": model.name(), "saved_to": str(saved_path), "format": format or "Comsol"},
+                model=model.name(),
+                saved_to=str(saved_path),
+                format=format or "Comsol",
+            )
         except Exception as e:
-            return {"success": False, "error": f"Failed to save model: {str(e)}"}
+            return session_manager.error("comsol_api_error", f"Failed to save model: {str(e)}")
     
     @mcp.tool()
     def model_save_version(
@@ -279,7 +277,7 @@ def register_model_tools(mcp: FastMCP) -> None:
             List of models with their names, file paths, and status
         """
         if not session_manager.is_connected:
-            return {"success": False, "error": "No active COMSOL session."}
+            return session_manager.error("no_active_session", "No active COMSOL session.")
         
         models = session_manager.models
         current = session_manager.current_model
@@ -297,12 +295,13 @@ def register_model_tools(mcp: FastMCP) -> None:
                 pass
             model_list.append(info)
         
-        return {
-            "success": True,
-            "models": model_list,
-            "count": len(model_list),
-            "current_model": current,
-        }
+        return session_manager.success(
+            "Loaded models listed.",
+            data={"models": model_list, "count": len(model_list), "current_model": current},
+            models=model_list,
+            count=len(model_list),
+            current_model=current,
+        )
     
     @mcp.tool()
     def model_set_current(model_name: str) -> dict:
@@ -344,10 +343,10 @@ def register_model_tools(mcp: FastMCP) -> None:
         """
         model = session_manager.get_model(model_name)
         if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
+            return session_manager.error(
+                "no_current_model",
+                f"Model not found: {model_name or 'no current model'}",
+            )
         
         try:
             client = session_manager.client
@@ -446,6 +445,6 @@ def register_model_tools(mcp: FastMCP) -> None:
             if problems:
                 info["problems"] = problems
             
-            return {"success": True, "model": info}
+            return session_manager.success("Model inspected.", data={"model": info}, model=info)
         except Exception as e:
-            return {"success": False, "error": f"Failed to inspect model: {str(e)}"}
+            return session_manager.error("comsol_api_error", f"Failed to inspect model: {str(e)}")

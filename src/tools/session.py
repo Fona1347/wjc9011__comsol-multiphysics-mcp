@@ -30,7 +30,15 @@ DEFAULT_START_TIMEOUT_SECONDS = 120
 DEFAULT_START_MODE = "client-server"
 DEFAULT_START_PORT = 0
 DEFAULT_LOGIN_MODE = "auto"
+DEFAULT_CONNECT_HOST = "localhost"
+PREFERRED_COMSOL_PORTS = (2037, 2036)
+DEFAULT_PORT_SCAN_START = 2036
+DEFAULT_PORT_SCAN_COUNT = 5
 ALLOWED_LOGIN_MODES = ("auto", "never", "force", "info")
+SESSION_DISCONNECTED = "disconnected"
+SESSION_CONNECTED = "connected"
+SESSION_MODEL_ACTIVE = "model_active"
+SESSION_RECOVERABLE_ERROR = "recoverable_error"
 
 
 class ComsolServerStartupTimeout(TimeoutError):
@@ -325,9 +333,37 @@ def _port_open(host: str, port: int, timeout: float = 0.5) -> bool:
         return False
 
 
-def _port_report(host: str = "127.0.0.1", start: int = 2036, count: int = 5) -> dict[int, bool]:
+def _port_report(
+    host: str = "127.0.0.1",
+    start: int = DEFAULT_PORT_SCAN_START,
+    count: int = DEFAULT_PORT_SCAN_COUNT,
+) -> dict[int, bool]:
     """Return occupied status for the default COMSOL port range."""
     return {port: _port_open(host, port) for port in range(start, start + count)}
+
+
+def _connection_recommendation(host: str = DEFAULT_CONNECT_HOST) -> dict[str, Any]:
+    """Recommend the next COMSOL connection action from preferred port state."""
+    ports = {port: _port_open(host, port) for port in PREFERRED_COMSOL_PORTS}
+    for port in PREFERRED_COMSOL_PORTS:
+        if ports[port]:
+            return {
+                "action": "connect",
+                "host": host,
+                "port": port,
+                "message": f"Connect to the existing COMSOL server on {host}:{port}.",
+                "preferred_ports": ports,
+            }
+    return {
+        "action": "start_server",
+        "host": host,
+        "port": PREFERRED_COMSOL_PORTS[0],
+        "message": (
+            f"No preferred COMSOL server port is open. Start comsolmphserver "
+            f"on {PREFERRED_COMSOL_PORTS[0]}, then call comsol_connect."
+        ),
+        "preferred_ports": ports,
+    }
 
 
 def _process_report() -> list[dict[str, Any]]:
@@ -451,14 +487,29 @@ def _classify_start_failure(
     return "unknown_start_failure"
 
 
+def _classify_connect_failure(error: Exception) -> str:
+    """Classify COMSOL connect failures into stable MCP error codes."""
+    text = f"{type(error).__name__}: {error}".lower()
+    if "only one client can be instantiated per python session" in text:
+        return "mph_client_already_instantiated"
+    if any(keyword in text for keyword in ("password", "login", "authentication", "鐢ㄦ埛", "瀵嗙爜")):
+        return "server_login_failed"
+    if "refused" in text or "port" in text or "connect" in text:
+        return "port_or_connection_failed"
+    return "comsol_api_error"
+
+
 def build_startup_preflight(version: Optional[str] = None, create_runtime_dirs: bool = False) -> dict[str, Any]:
     """Build a structured COMSOL startup readiness report."""
     try:
         mph_options = mph.option().copy()
     except Exception as exc:
         mph_options = {"error": f"{type(exc).__name__}: {exc}"}
+    preferred_host = DEFAULT_CONNECT_HOST
     return {
         "success": True,
+        "error_code": None,
+        "message": "COMSOL startup preflight completed.",
         "runtimes": {
             "java": _runtime_path("COMSOL_JAVA_EXE", DEFAULT_COMSOL_JAVA_EXE),
             "javac": _runtime_path("COMSOL_JAVAC_EXE", DEFAULT_COMSOL_JAVAC_EXE),
@@ -474,6 +525,7 @@ def build_startup_preflight(version: Optional[str] = None, create_runtime_dirs: 
         "backend": _backend_report(version),
         "directories": _directory_report(create_runtime_dirs=create_runtime_dirs),
         "login_properties": _login_properties_report(),
+        "preferred_connection": _connection_recommendation(preferred_host),
         "ports": _port_report(),
         "processes": _process_report(),
         "cleanup_policy": (
@@ -531,6 +583,10 @@ class SessionManager:
     _server: Any = None
     _models: dict[str, mph.Model] = {}
     _current_model: Optional[str] = None
+    _state: str = SESSION_DISCONNECTED
+    _connection_host: Optional[str] = None
+    _connection_port: Optional[int] = None
+    _last_error_code: Optional[str] = None
     
     def __new__(cls):
         if cls._instance is None:
@@ -548,6 +604,14 @@ class SessionManager:
     @property
     def is_connected(self) -> bool:
         return self._client is not None
+
+    @property
+    def session_state(self) -> str:
+        if self._client is not None and self._current_model is not None:
+            return SESSION_MODEL_ACTIVE
+        if self._client is not None:
+            return SESSION_CONNECTED
+        return self._state
     
     @property
     def current_model(self) -> Optional[str]:
@@ -556,6 +620,46 @@ class SessionManager:
     @property
     def models(self) -> dict[str, mph.Model]:
         return self._models.copy()
+
+    def _context(self) -> dict[str, Any]:
+        return {
+            "session_state": self.session_state,
+            "current_model": self._current_model,
+        }
+
+    def success(self, message: str, data: Optional[dict[str, Any]] = None, **legacy: Any) -> dict[str, Any]:
+        result = {
+            "success": True,
+            "error_code": None,
+            "message": message,
+            **self._context(),
+            "data": data or {},
+            "artifacts": {},
+        }
+        result.update(legacy)
+        return result
+
+    def error(
+        self,
+        error_code: str,
+        message: str,
+        data: Optional[dict[str, Any]] = None,
+        **legacy: Any,
+    ) -> dict[str, Any]:
+        self._last_error_code = error_code
+        if self._client is None:
+            self._state = SESSION_RECOVERABLE_ERROR
+        result = {
+            "success": False,
+            "error_code": error_code,
+            "message": message,
+            **self._context(),
+            "data": data or {},
+            "artifacts": {},
+            "error": message,
+        }
+        result.update(legacy)
+        return result
     
     def start(
         self,
@@ -573,19 +677,19 @@ class SessionManager:
                 self._client.clear()
                 self._models.clear()
                 self._current_model = None
-                return {
-                    "success": True,
+                return self.success(
+                    "Cleared existing session and ready.",
+                    data=_safe_client_info(self._client, self._server),
                     **_safe_client_info(self._client, self._server),
-                    "message": "Cleared existing session and ready."
-                }
+                )
             except Exception as e:
-                return {"success": False, "error": f"Failed to clear existing session: {e}"}
+                return self.error("comsol_api_error", f"Failed to clear existing session: {e}")
         if mode not in ("client-server", "stand-alone"):
-            return {"success": False, "error": f"Unsupported COMSOL start mode: {mode}"}
+            return self.error("invalid_argument", f"Unsupported COMSOL start mode: {mode}")
         if login_mode not in ALLOWED_LOGIN_MODES:
-            return {"success": False, "error": f"Unsupported COMSOL login mode: {login_mode}"}
+            return self.error("invalid_argument", f"Unsupported COMSOL login mode: {login_mode}")
         if timeout_seconds <= 0:
-            return {"success": False, "error": "timeout_seconds must be greater than 0"}
+            return self.error("invalid_argument", "timeout_seconds must be greater than 0")
         directories = _directory_report(create_runtime_dirs=redirect_user_dirs)
         if redirect_user_dirs:
             blocked = {
@@ -593,11 +697,12 @@ class SessionManager:
                 if key.startswith("runtime_") and not value.get("writable")
             }
             if blocked:
-                return {
-                    "success": False,
-                    "error": "Redirected COMSOL runtime directories are not writable.",
-                    "directories": blocked,
-                }
+                return self.error(
+                    "filesystem_or_process_permission_failed",
+                    "Redirected COMSOL runtime directories are not writable.",
+                    data={"directories": blocked},
+                    directories=blocked,
+                )
         try:
             if mode == "client-server":
                 arguments = _comsol_server_arguments() if redirect_user_dirs else []
@@ -612,16 +717,22 @@ class SessionManager:
                 self._client = mph.Client(cores=cores, version=version, port=self._server.port)
             else:
                 self._client = mph.Client(cores=cores, version=version)
-            return {
-                "success": True,
-                **_safe_client_info(self._client, self._server),
+            self._state = SESSION_CONNECTED
+            info = {
                 "mode": mode,
                 "redirect_user_dirs": redirect_user_dirs,
                 "runtime_root": str(DEFAULT_RUNTIME_ROOT) if redirect_user_dirs else None,
                 "login_mode": login_mode,
             }
+            info.update(_safe_client_info(self._client, self._server))
+            return self.success(
+                "COMSOL session started.",
+                data=info,
+                **info,
+            )
         except Exception as e:
             self._client = None
+            self._state = SESSION_RECOVERABLE_ERROR
             server_diagnostics = {
                 "command": getattr(e, "command", None),
                 "last_output_lines": getattr(e, "output_lines", []),
@@ -652,50 +763,96 @@ class SessionManager:
                 failure_category=failure_category,
                 server_diagnostics=server_diagnostics,
             )
-            return {
-                "success": False,
-                "error": f"{type(e).__name__}: {e}",
-                "failure_category": failure_category,
-                "failure_report": str(report_path),
-                "mode": mode,
-                "login_mode": login_mode,
-                "runtime_root": str(DEFAULT_RUNTIME_ROOT) if redirect_user_dirs else None,
-                "server_diagnostics": server_diagnostics,
-                "directories": directories,
-                "login_properties": _login_properties_report(),
-            }
+            return self.error(
+                failure_category,
+                f"{type(e).__name__}: {e}",
+                data={
+                    "failure_category": failure_category,
+                    "failure_report": str(report_path),
+                    "mode": mode,
+                    "login_mode": login_mode,
+                    "runtime_root": str(DEFAULT_RUNTIME_ROOT) if redirect_user_dirs else None,
+                    "server_diagnostics": server_diagnostics,
+                    "directories": directories,
+                    "login_properties": _login_properties_report(),
+                },
+                failure_category=failure_category,
+                failure_report=str(report_path),
+                mode=mode,
+                login_mode=login_mode,
+                runtime_root=str(DEFAULT_RUNTIME_ROOT) if redirect_user_dirs else None,
+                server_diagnostics=server_diagnostics,
+                directories=directories,
+                login_properties=_login_properties_report(),
+            )
     
     def connect(self, port: int, host: str = "localhost") -> dict:
         """Connect to a remote COMSOL server."""
         if self._client is not None:
-            return {
-                "success": False,
-                "error": "COMSOL session already running. Disconnect first."
-            }
+            if self._connection_host == host and self._connection_port == port:
+                return self.success(
+                    f"Already connected to COMSOL server on {host}:{port}.",
+                    data={"connected": True, "host": host, "port": port, "idempotent": True},
+                    connected=True,
+                    host=host,
+                    port=port,
+                    idempotent=True,
+                )
+            return self.error(
+                "already_connected_different_server",
+                (
+                    "COMSOL session already connected to "
+                    f"{self._connection_host or 'unknown'}:{self._connection_port or 'unknown'}. "
+                    "Call comsol_disconnect before connecting to a different server."
+                ),
+                data={
+                    "requested": {"host": host, "port": port},
+                    "active": {"host": self._connection_host, "port": self._connection_port},
+                },
+            )
+        if not _port_open(host, port):
+            return self.error(
+                "port_closed",
+                f"No COMSOL server is accepting connections on {host}:{port}.",
+                data={"host": host, "port": port, "preferred_ports": PREFERRED_COMSOL_PORTS},
+            )
         try:
             self._client = mph.Client(port=port, host=host)
-            return {
-                "success": True,
-                **_safe_client_info(self._client, host=host),
-                "port": port,
-                "host": host,
-            }
+            self._state = SESSION_CONNECTED
+            self._connection_host = host
+            self._connection_port = port
+            return self.success(
+                "Connected. Use comsol_status for detailed client info.",
+                data={"connected": True, "port": port, "host": host},
+                connected=True,
+                port=port,
+                host=host,
+            )
         except Exception as e:
-            return {
-                "success": False,
-                "error": f"{type(e).__name__}: {e}",
-                "failure_category": _classify_start_failure(
+            error_code = _classify_connect_failure(e)
+            failure_category = _classify_start_failure(
                     e,
                     {"port": port, "host": host},
                     _directory_report(create_runtime_dirs=False),
-                ),
-                "login_properties": _login_properties_report(),
-            }
+            )
+            return self.error(
+                error_code,
+                f"{type(e).__name__}: {e}",
+                data={
+                    "failure_category": failure_category,
+                    "host": host,
+                    "port": port,
+                    "login_properties": _login_properties_report(),
+                },
+                failure_category=failure_category,
+                login_properties=_login_properties_report(),
+            )
     
     def disconnect(self) -> dict:
         """Disconnect and clear the session."""
         if self._client is None and self._server is None:
-            return {"success": True, "message": "No active session."}
+            self._state = SESSION_DISCONNECTED
+            return self.success("No active session.")
         messages = []
         if self._client is not None:
             try:
@@ -710,6 +867,8 @@ class SessionManager:
             self._client = None
         self._models.clear()
         self._current_model = None
+        self._connection_host = None
+        self._connection_port = None
         if self._server is not None:
             try:
                 if not hasattr(self._server, "running") or self._server.running():
@@ -719,15 +878,17 @@ class SessionManager:
                 messages.append(f"server stop error: {exc}")
             finally:
                 self._server = None
-        return {"success": True, "message": "; ".join(messages) or "Session cleared and disconnected."}
+        self._state = SESSION_DISCONNECTED
+        return self.success("; ".join(messages) or "Session cleared and disconnected.")
     
     def get_status(self) -> dict:
         """Get current session status."""
         if self._client is None:
-            return {
-                "connected": False,
-                "message": "No active COMSOL session."
-            }
+            return self.success(
+                "No active COMSOL session.",
+                data={"connected": False},
+                connected=False,
+            )
         
         model_list = []
         for name in self._client.names():
@@ -737,12 +898,17 @@ class SessionManager:
                 model_info["file"] = model.file() if hasattr(model, 'file') else None
             model_list.append(model_info)
         
-        return {
-            "connected": True,
-            **_safe_client_info(self._client, self._server),
+        info = {
+            **_safe_client_info(self._client, self._server, host=self._connection_host),
             "models": model_list,
             "current_model": self._current_model,
         }
+        return self.success(
+            "COMSOL session is connected.",
+            data={"connected": True, **info},
+            connected=True,
+            **info,
+        )
     
     def add_model(self, model: mph.Model) -> str:
         """Add a model to tracking."""
@@ -750,6 +916,7 @@ class SessionManager:
         self._models[name] = model
         if self._current_model is None:
             self._current_model = name
+        self._state = SESSION_MODEL_ACTIVE
         return name
     
     def get_model(self, name: Optional[str] = None) -> Optional[mph.Model]:

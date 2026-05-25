@@ -31,7 +31,7 @@ English | [中文](README_CN.md)
 
 ```bash
 # Clone repository
-git clone https://github.com/wjc9011/comsol-mcp.git
+git clone https://github.com/fona1347/comsol-mcp.git
 cd comsol-mcp
 
 # Install dependencies
