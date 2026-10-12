@@ -65,7 +65,7 @@ E:\hycodespace\Forks\COMSOL_Multiphysics_MCP
 Before reinstalling, the environment had pointed at another checkout:
 
 ```text
-E:\hycodespace\Clone\wjc9011\COMSOL_Multiphysics_MCP
+E:\hycodespace\Clone\wjc9011__COMSOL_Multiphysics_MCP
 ```
 
 ## PATH Warning

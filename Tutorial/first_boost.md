@@ -7,7 +7,7 @@ TL;DR：可以。当前 COMSOL MCP 支持通过 `comsol_start(version="6.4")` �
 你的 MCP 配置已经指向：
 
 ```text
-E:\hycodespace\Forks\COMSOL_Multiphysics_MCP
+E:\hycodespace\Forks\wjc9011__comsol-multiphysics-mcp
 ```
 
 启动命令是：

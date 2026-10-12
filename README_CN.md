@@ -31,8 +31,8 @@ English | [中文](README_CN.md)
 
 ```bash
 # Clone repository
-git clone https://github.com/fona1347/comsol-mcp.git
-cd comsol-mcp
+git clone https://github.com/Fona1347/wjc9011__comsol-multiphysics-mcp.git
+cd wjc9011__comsol-multiphysics-mcp
 
 # Install dependencies
 python -m pip install -e .
