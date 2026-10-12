@@ -991,14 +991,18 @@ def register_physics_tools(mcp: FastMCP) -> None:
     
     @mcp.tool()
     def physics_list_features(
-        physics_name: str,
+        physics_name: Optional[str] = None,
+        physics_tag: Optional[str] = None,
+        component_name: Optional[str] = None,
         model_name: Optional[str] = None
     ) -> dict:
         """
         List all features (boundary conditions, domain settings) in a physics interface.
         
         Args:
-            physics_name: Name of the physics interface
+            physics_name: Physics interface tag or label (legacy)
+            physics_tag: Physics interface tag (preferred)
+            component_name: Optional component tag to search within
             model_name: Model name (default: current model)
         
         Returns:
@@ -1012,24 +1016,37 @@ def register_physics_tools(mcp: FastMCP) -> None:
             }
         
         try:
-            physics_interfaces = model.physics()
-            if physics_name not in physics_interfaces:
-                return {"success": False, "error": f"Physics interface not found: {physics_name}"}
-            
-            physics_node = model / "physics" / physics_name
+            comp, physics_node, error = _resolve_physics_interface(
+                model,
+                physics_tag=physics_tag,
+                physics_name=physics_name,
+                component_name=component_name,
+            )
+            if error:
+                return error
+
             features = []
-            
-            for child in physics_node.children():
-                feat_info = {"name": child.name()}
+            for child in physics_node.feature():
+                feat_info = {
+                    "tag": str(child.tag()),
+                    "label": _java_node_label(child),
+                }
                 try:
-                    feat_info["type"] = child.type() if hasattr(child, 'type') else "unknown"
+                    feat_info["type"] = str(child.getType())
                 except Exception:
-                    pass
+                    try:
+                        feat_info["type"] = str(child.type())
+                    except Exception:
+                        feat_info["type"] = "unknown"
                 features.append(feat_info)
             
             return {
                 "success": True,
-                "physics": physics_name,
+                "component": str(comp.tag()),
+                "physics": {
+                    "tag": str(physics_node.tag()),
+                    "label": _java_node_label(physics_node),
+                },
                 "features": features,
                 "count": len(features),
             }

@@ -10,6 +10,7 @@ from .topology_utils import (
     centroid_from_points,
     classify_semantics,
     enrich_topology,
+    normalize_point,
 )
 from .session import session_manager
 
@@ -60,6 +61,38 @@ def _call_geom_adj(geom, from_dim: int, entity_id: int, to_dim: int, diagnostics
         return []
 
 
+def _call_entity_vertices(geom, entity_dim: int, entity_id: int, diagnostics: dict) -> list[int]:
+    """Return vertices for an entity, with fallbacks for COMSOL geometry APIs."""
+    vertices = _call_geom_adj(geom, entity_dim, entity_id, 0, diagnostics)
+    if vertices:
+        return vertices
+    key = f"getStartEnd({entity_dim},{entity_id})"
+    try:
+        vertices = as_int_list(geom.getStartEnd(entity_dim, int(entity_id)))
+        if vertices:
+            diagnostics.setdefault("method_success", {})[key] = vertices
+            return vertices
+    except Exception as exc:
+        diagnostics.setdefault("method_errors", {})[key] = str(exc)
+    key = f"getStartEnd({entity_id})"
+    try:
+        vertices = as_int_list(geom.getStartEnd(int(entity_id)))
+        if vertices:
+            diagnostics.setdefault("method_success", {})[key] = vertices
+            return vertices
+    except Exception as exc:
+        diagnostics.setdefault("method_errors", {})[key] = str(exc)
+    key = f"getVertex({entity_dim},{entity_id})"
+    try:
+        vertices = as_int_list(geom.getVertex(entity_dim, int(entity_id)))
+        if vertices:
+            diagnostics.setdefault("method_success", {})[key] = vertices
+            return vertices
+    except Exception as exc:
+        diagnostics.setdefault("method_errors", {})[key] = str(exc)
+    return []
+
+
 def _count_entities(geom, diagnostics: dict) -> dict:
     counts = {}
     for key, method_name in (
@@ -84,6 +117,82 @@ def _count_entities(geom, diagnostics: dict) -> dict:
         ]
         diagnostics.setdefault("method_errors", {})["getNEntities"] = str(exc)
     return counts
+
+
+def _geometry_dimension_profile(geom, counts: dict, diagnostics: dict) -> dict:
+    """Infer a dimension profile for 1D/2D/3D COMSOL geometry sequences."""
+    space_dim = None
+    try:
+        space_dim = int(geom.getSDim())
+        diagnostics.setdefault("method_success", {})["getSDim"] = space_dim
+    except Exception as exc:
+        diagnostics.setdefault("method_errors", {})["getSDim"] = str(exc)
+
+    entities = counts.get("entities_by_dimension") or []
+    if space_dim is None and entities:
+        nonzero_dims = [index for index, count in enumerate(entities) if count]
+        if nonzero_dims:
+            space_dim = max(nonzero_dims)
+    if space_dim is None:
+        if counts.get("domains"):
+            space_dim = 3
+        elif counts.get("boundaries"):
+            space_dim = 2
+        elif counts.get("edges"):
+            space_dim = 1
+        else:
+            space_dim = 0
+
+    space_dim = max(0, min(3, int(space_dim)))
+    boundary_dim = max(space_dim - 1, 0)
+    edge_dim = 1 if space_dim == 3 else None
+    try:
+        is_axisymmetric = bool(geom.isAxisymmetric())
+    except Exception:
+        try:
+            is_axisymmetric = bool(geom.axisymmetric())
+        except Exception:
+            is_axisymmetric = False
+
+    return {
+        "space_dim": space_dim,
+        "domain_dim": space_dim,
+        "boundary_dim": boundary_dim,
+        "edge_dim": edge_dim,
+        "vertex_dim": 0,
+        "coordinate_dim": space_dim if space_dim > 0 else 3,
+        "is_axisymmetric": is_axisymmetric,
+    }
+
+
+def _get_vertex_coord(geom, vertex_id: int, profile: dict, diagnostics: dict) -> list[float]:
+    """Read a vertex coordinate using COMSOL-version-specific fallbacks."""
+    coordinate_dim = profile.get("coordinate_dim", 3)
+    for method_name in ("getVtxCoord", "getVertexCoord", "getVertex"):
+        try:
+            raw = getattr(geom, method_name)(vertex_id)
+            coord = normalize_point(as_float_list(raw), coordinate_dim=coordinate_dim)
+            if coord is not None:
+                diagnostics.setdefault("method_success", {})[f"{method_name}({vertex_id})"] = coord
+                return coord
+        except Exception as exc:
+            diagnostics.setdefault("method_errors", {})[f"{method_name}({vertex_id})"] = str(exc)
+    return []
+
+
+def _entity_count_for_dim(counts: dict, dim: int) -> int:
+    entities = counts.get("entities_by_dimension") or []
+    if 0 <= dim < len(entities):
+        return int(entities[dim])
+    if dim == 0:
+        return int(counts.get("vertices", 0))
+    if dim == 1:
+        return int(counts.get("edges", 0))
+    if dim == 2:
+        return int(counts.get("boundaries", 0))
+    if dim == 3:
+        return int(counts.get("domains", 0))
+    return 0
 
 
 def _analyze_geometry_topology(
@@ -114,13 +223,11 @@ def _analyze_geometry_topology(
         pass
 
     counts = _count_entities(geom, diagnostics)
+    profile = _geometry_dimension_profile(geom, counts, diagnostics)
+    diagnostics["dimension_profile"] = profile
     vertices = {}
     for vertex_id in range(1, counts["vertices"] + 1):
-        coord = []
-        try:
-            coord = as_float_list(geom.getVtxCoord(vertex_id))
-        except Exception as exc:
-            diagnostics["method_errors"][f"getVtxCoord({vertex_id})"] = str(exc)
+        coord = _get_vertex_coord(geom, vertex_id, profile, diagnostics)
         if not coord:
             diagnostics["missing_fields"].append(f"vertex {vertex_id} coord")
         vertices[str(vertex_id)] = {"id": vertex_id, "coord": coord}
@@ -133,26 +240,35 @@ def _analyze_geometry_topology(
         ]
 
     edges = {}
-    for edge_id in range(1, counts["edges"] + 1):
-        edge_vertices = _call_geom_adj(geom, 1, edge_id, 0, diagnostics)
+    edge_dim = profile.get("edge_dim")
+    edge_count = counts["edges"] if edge_dim is not None else 0
+    for edge_id in range(1, edge_count + 1):
+        edge_vertices = _call_entity_vertices(geom, edge_dim, edge_id, diagnostics)
         edge_points = coords_for(edge_vertices)
         edges[str(edge_id)] = {
             "id": edge_id,
+            "entity_dim": edge_dim,
             "vertices": edge_vertices,
-            "boundaries": _call_geom_adj(geom, 1, edge_id, 2, diagnostics),
-            "adjacent_domains": _call_geom_adj(geom, 1, edge_id, 3, diagnostics),
+            "boundaries": _call_geom_adj(geom, edge_dim, edge_id, profile["boundary_dim"], diagnostics),
+            "adjacent_domains": _call_geom_adj(geom, edge_dim, edge_id, profile["domain_dim"], diagnostics),
             "bbox": bbox_from_points(edge_points),
             "centroid": centroid_from_points(edge_points),
         }
 
     boundaries = {}
-    for boundary_id in range(1, counts["boundaries"] + 1):
-        boundary_vertices = _call_geom_adj(geom, 2, boundary_id, 0, diagnostics)
-        boundary_edges = _call_geom_adj(geom, 2, boundary_id, 1, diagnostics)
-        boundary_domains = _call_geom_adj(geom, 2, boundary_id, 3, diagnostics)
+    boundary_count = _entity_count_for_dim(counts, profile["boundary_dim"])
+    for boundary_id in range(1, boundary_count + 1):
+        boundary_vertices = _call_entity_vertices(geom, profile["boundary_dim"], boundary_id, diagnostics)
+        boundary_edges = (
+            _call_geom_adj(geom, profile["boundary_dim"], boundary_id, edge_dim, diagnostics)
+            if edge_dim is not None and edge_dim != profile["boundary_dim"]
+            else []
+        )
+        boundary_domains = _call_geom_adj(geom, profile["boundary_dim"], boundary_id, profile["domain_dim"], diagnostics)
         boundary_points = coords_for(boundary_vertices)
         boundary = {
             "id": boundary_id,
+            "entity_dim": profile["boundary_dim"],
             "vertices": boundary_vertices,
             "edges": boundary_edges,
             "adjacent_domains": boundary_domains,
@@ -165,12 +281,14 @@ def _analyze_geometry_topology(
         boundaries[str(boundary_id)] = boundary
 
     domains = {}
-    for domain_id in range(1, counts["domains"] + 1):
-        domain_boundaries = _call_geom_adj(geom, 3, domain_id, 2, diagnostics)
-        domain_vertices = _call_geom_adj(geom, 3, domain_id, 0, diagnostics)
+    domain_count = _entity_count_for_dim(counts, profile["domain_dim"])
+    for domain_id in range(1, domain_count + 1):
+        domain_boundaries = _call_geom_adj(geom, profile["domain_dim"], domain_id, profile["boundary_dim"], diagnostics)
+        domain_vertices = _call_entity_vertices(geom, profile["domain_dim"], domain_id, diagnostics)
         domain_points = coords_for(domain_vertices)
         domains[str(domain_id)] = {
             "id": domain_id,
+            "entity_dim": profile["domain_dim"],
             "vertices": domain_vertices,
             "boundaries": domain_boundaries,
             "bbox": bbox_from_points(domain_points),
@@ -183,6 +301,7 @@ def _analyze_geometry_topology(
         "model": model.name(),
         "component": component_name,
         "geometry": geometry_tag,
+        "dimension_profile": profile,
         "entities_by_dimension": counts["entities_by_dimension"],
         "counts": {
             "domains": counts["domains"],

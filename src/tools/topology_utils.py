@@ -36,10 +36,31 @@ def as_float_list(value: Any) -> list[float]:
             return []
 
 
+def normalize_point(point: Iterable[float] | None, coordinate_dim: int = 3) -> list[float] | None:
+    """Normalize 1D/2D/3D coordinates to a 3D point."""
+    if point is None:
+        return None
+    coords = as_float_list(point)
+    if not coords:
+        return None
+    if len(coords) > coordinate_dim:
+        coords = coords[:coordinate_dim]
+    if len(coords) > 3:
+        coords = coords[:3]
+    while len(coords) < 3:
+        coords.append(0.0)
+    return coords
+
+
+def normalize_points(points: Iterable[Iterable[float] | None], coordinate_dim: int = 3) -> list[list[float]]:
+    """Normalize coordinate-like values to 3D points."""
+    normalized = [normalize_point(point, coordinate_dim=coordinate_dim) for point in points]
+    return [point for point in normalized if point is not None]
+
+
 def bbox_from_points(points: Iterable[Iterable[float]]) -> dict[str, list[float]] | None:
-    """Return an axis-aligned bounding box from 3D points."""
-    coords = [list(point) for point in points if point is not None]
-    coords = [point for point in coords if len(point) >= 3]
+    """Return an axis-aligned bounding box from 1D, 2D, or 3D points."""
+    coords = normalize_points(points)
     if not coords:
         return None
     return {
@@ -49,9 +70,8 @@ def bbox_from_points(points: Iterable[Iterable[float]]) -> dict[str, list[float]
 
 
 def centroid_from_points(points: Iterable[Iterable[float]]) -> list[float] | None:
-    """Return the arithmetic centroid from 3D points."""
-    coords = [list(point) for point in points if point is not None]
-    coords = [point for point in coords if len(point) >= 3]
+    """Return the arithmetic centroid from 1D, 2D, or 3D points."""
+    coords = normalize_points(points)
     if not coords:
         return None
     return [
@@ -77,13 +97,14 @@ def boundary_position_tags(
     boundary_bbox: dict[str, list[float]] | None,
     global_bbox: dict[str, list[float]] | None,
     tolerance: float = TOLERANCE,
+    axes: Iterable[str] = AXES,
 ) -> list[str]:
     """Classify a boundary bbox against global min/max planes."""
     if not boundary_bbox or not global_bbox:
         return []
 
     tags: list[str] = []
-    for axis in AXES:
+    for axis in axes:
         bmin, bmax = boundary_bbox.get(axis, [None, None])
         gmin, gmax = global_bbox.get(axis, [None, None])
         if bmin is None or bmax is None or gmin is None or gmax is None:
@@ -98,17 +119,35 @@ def boundary_position_tags(
 
 def enrich_topology(topology: dict[str, Any]) -> dict[str, Any]:
     """Add derived flags and summaries to a GeometryGraph-like dict."""
+    dimension_profile = topology.get("dimension_profile") or {}
+    boundary_dim = dimension_profile.get("boundary_dim", 2)
+    space_dim = int(dimension_profile.get("space_dim", 3) or 3)
+    active_axes = AXES[:max(1, min(space_dim, len(AXES)))]
     vertices = topology.get("vertices", {})
+    for vertex in vertices.values():
+        if vertex.get("coord"):
+            vertex["coord"] = normalize_point(vertex.get("coord")) or []
     points = [vertex.get("coord") for vertex in vertices.values() if vertex.get("coord")]
     global_bbox = bbox_from_points(points)
     topology["global_bbox"] = global_bbox
 
+    boundary_to_domains: dict[int, set[int]] = defaultdict(set)
+    for domain in topology.get("domains", {}).values():
+        domain_id = int(domain["id"])
+        for boundary_id in domain.get("boundaries", []):
+            boundary_to_domains[int(boundary_id)].add(domain_id)
+
     domain_to_boundaries: dict[int, set[int]] = defaultdict(set)
     for boundary in topology.get("boundaries", {}).values():
+        boundary_id = int(boundary["id"])
         adjacent_domains = [int(item) for item in boundary.get("adjacent_domains", [])]
+        if not adjacent_domains and boundary_id in boundary_to_domains:
+            adjacent_domains = sorted(boundary_to_domains[boundary_id])
+            boundary["adjacent_domains"] = adjacent_domains
         boundary["is_exterior"] = len(adjacent_domains) == 1
         boundary["is_interface"] = len(adjacent_domains) > 1
-        boundary["position_tags"] = boundary_position_tags(boundary.get("bbox"), global_bbox)
+        boundary["position_tags"] = boundary_position_tags(boundary.get("bbox"), global_bbox, axes=active_axes)
+        boundary["entity_dim"] = boundary.get("entity_dim", boundary_dim)
         for domain_id in adjacent_domains:
             domain_to_boundaries[domain_id].add(int(boundary["id"]))
 
@@ -134,6 +173,7 @@ def enrich_topology(topology: dict[str, Any]) -> dict[str, Any]:
 def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
     """Create explainable semantic candidates from a topology graph."""
     topology = enrich_topology(topology)
+    boundary_dim = (topology.get("dimension_profile") or {}).get("boundary_dim", 2)
     candidates: list[dict[str, Any]] = []
     summary = {
         "exterior_boundaries": [],
@@ -147,7 +187,7 @@ def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
         if boundary.get("is_interface"):
             summary["interface_boundaries"].append(boundary_id)
             candidates.append({
-                "entity_dim": 2,
+                "entity_dim": boundary_dim,
                 "entity_id": boundary_id,
                 "label": "interface_candidate",
                 "confidence": 0.95,
@@ -162,7 +202,7 @@ def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
             summary["exterior_boundaries"].append(boundary_id)
             candidates.extend([
                 {
-                    "entity_dim": 2,
+                    "entity_dim": boundary_dim,
                     "entity_id": boundary_id,
                     "label": "wall_candidate",
                     "confidence": 0.75,
@@ -170,7 +210,7 @@ def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
                     "warnings": [],
                 },
                 {
-                    "entity_dim": 2,
+                    "entity_dim": boundary_dim,
                     "entity_id": boundary_id,
                     "label": "thermal_boundary_candidate",
                     "confidence": 0.65,
@@ -178,7 +218,7 @@ def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
                     "warnings": [],
                 },
                 {
-                    "entity_dim": 2,
+                    "entity_dim": boundary_dim,
                     "entity_id": boundary_id,
                     "label": "fixed_support_candidate",
                     "confidence": 0.55,
@@ -186,7 +226,7 @@ def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
                     "warnings": ["Requires user intent for support direction/location."],
                 },
                 {
-                    "entity_dim": 2,
+                    "entity_dim": boundary_dim,
                     "entity_id": boundary_id,
                     "label": "load_face_candidate",
                     "confidence": 0.55,
@@ -198,7 +238,7 @@ def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
                 summary["position_tags"][boundary_id] = position_tags
                 candidates.extend([
                     {
-                        "entity_dim": 2,
+                        "entity_dim": boundary_dim,
                         "entity_id": boundary_id,
                         "label": "inlet_candidate",
                         "confidence": 0.7,
@@ -209,7 +249,7 @@ def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
                         "warnings": ["Requires flow direction/user intent."],
                     },
                     {
-                        "entity_dim": 2,
+                        "entity_dim": boundary_dim,
                         "entity_id": boundary_id,
                         "label": "outlet_candidate",
                         "confidence": 0.7,
@@ -220,7 +260,7 @@ def classify_semantics(topology: dict[str, Any]) -> dict[str, Any]:
                         "warnings": ["Requires flow direction/user intent."],
                     },
                     {
-                        "entity_dim": 2,
+                        "entity_dim": boundary_dim,
                         "entity_id": boundary_id,
                         "label": "symmetry_candidate",
                         "confidence": 0.45,
@@ -259,6 +299,7 @@ def recommend_boundary_plan(
     intent = intent or {}
     physics_tag = physics_tag or intent.get("physics_tag", "")
     physics_key = physics_tag.lower()
+    dimension_profile = topology.get("dimension_profile") or {}
     features: list[dict[str, Any]] = []
     warnings: list[str] = []
 
@@ -306,18 +347,26 @@ def recommend_boundary_plan(
                 "confidence": 0.7,
             })
     elif physics_key in {"ht", "heat_transfer", "heattransfer"}:
-        target_tag = intent.get("target", "max_z")
-        boundary_ids = _boundaries_with_position(topology, target_tag)
-        feature_type = intent.get("boundary_type", "TemperatureBoundary")
-        properties = intent.get("properties", {"T0": intent.get("temperature", "293.15[K]")})
-        features.append({
-            "feature_tag": "thermal_auto",
-            "type": feature_type,
-            "boundary_ids": boundary_ids,
-            "properties": properties,
-            "reason": f"Selected exterior boundary on {target_tag}.",
-            "confidence": 0.7 if boundary_ids else 0.0,
-        })
+        thermal_boundaries = intent.get("temperature_boundaries")
+        if not thermal_boundaries:
+            thermal_boundaries = [{
+                "tag": intent.get("target", "max_x"),
+                "temperature": intent.get("temperature", "293.15[K]"),
+                "feature_tag": "thermal_auto",
+            }]
+        for index, item in enumerate(thermal_boundaries, start=1):
+            target_tag = item.get("tag") or item.get("target") or "max_x"
+            boundary_ids = _boundaries_with_position(topology, target_tag)
+            feature_type = item.get("boundary_type", intent.get("boundary_type", "TemperatureBoundary"))
+            properties = item.get("properties", {"T0": item.get("temperature", "293.15[K]")})
+            features.append({
+                "feature_tag": item.get("feature_tag", f"thermal_auto_{index}"),
+                "type": feature_type,
+                "boundary_ids": boundary_ids,
+                "properties": properties,
+                "reason": f"Selected exterior boundary on {target_tag}.",
+                "confidence": 0.7 if boundary_ids else 0.0,
+            })
     elif physics_key in {"solid", "solid_mechanics", "solidmechanics"}:
         fixed_tag = intent.get("fixed", "min_z")
         load_tag = intent.get("load", "max_z")
@@ -348,6 +397,8 @@ def recommend_boundary_plan(
         "physics_tag": physics_tag,
         "component": intent.get("component", "comp1"),
         "geometry": intent.get("geometry", "geom1"),
+        "space_dim": dimension_profile.get("space_dim"),
+        "boundary_dim": dimension_profile.get("boundary_dim"),
         "features": features,
         "validation": {"status": "unvalidated", "errors": [], "warnings": warnings},
         "requires_user_confirmation": any(feature["confidence"] < 0.5 for feature in features),

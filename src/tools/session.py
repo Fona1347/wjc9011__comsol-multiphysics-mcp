@@ -39,6 +39,7 @@ SESSION_DISCONNECTED = "disconnected"
 SESSION_CONNECTED = "connected"
 SESSION_MODEL_ACTIVE = "model_active"
 SESSION_RECOVERABLE_ERROR = "recoverable_error"
+SESSION_RESTART_REQUIRED = "restart_required"
 
 
 class ComsolServerStartupTimeout(TimeoutError):
@@ -465,6 +466,8 @@ def _classify_start_failure(
     """Classify COMSOL startup failures into actionable buckets."""
     text = f"{type(error).__name__}: {error}".lower()
     server_started = bool(server_diagnostics and server_diagnostics.get("port"))
+    if _is_mph_single_client_error(error):
+        return "mph_client_already_instantiated"
     if any(keyword in text for keyword in ("用户名", "密码", "password", "login", "authentication")):
         return "server_login_failed" if server_started else "login_or_credentials_failed"
     if "license" in text or "许可证" in text or "licence" in text:
@@ -490,13 +493,19 @@ def _classify_start_failure(
 def _classify_connect_failure(error: Exception) -> str:
     """Classify COMSOL connect failures into stable MCP error codes."""
     text = f"{type(error).__name__}: {error}".lower()
-    if "only one client can be instantiated per python session" in text:
+    if _is_mph_single_client_error(error):
         return "mph_client_already_instantiated"
     if any(keyword in text for keyword in ("password", "login", "authentication", "鐢ㄦ埛", "瀵嗙爜")):
         return "server_login_failed"
     if "refused" in text or "port" in text or "connect" in text:
         return "port_or_connection_failed"
     return "comsol_api_error"
+
+
+def _is_mph_single_client_error(error: Exception) -> bool:
+    """Return True for MPh/JPype's process-global single-client failure."""
+    text = f"{type(error).__name__}: {error}".lower()
+    return "only one client can be instantiated per python session" in text
 
 
 def build_startup_preflight(version: Optional[str] = None, create_runtime_dirs: bool = False) -> dict[str, Any]:
@@ -586,6 +595,11 @@ class SessionManager:
     _state: str = SESSION_DISCONNECTED
     _connection_host: Optional[str] = None
     _connection_port: Optional[int] = None
+    _connection_mode: Optional[str] = None
+    _connection_version: Optional[str] = None
+    _connection_cores: Optional[int] = None
+    _server_owned: bool = False
+    _requires_mcp_process_restart: bool = False
     _last_error_code: Optional[str] = None
     
     def __new__(cls):
@@ -607,6 +621,8 @@ class SessionManager:
 
     @property
     def session_state(self) -> str:
+        if self._requires_mcp_process_restart:
+            return SESSION_RESTART_REQUIRED
         if self._client is not None and self._current_model is not None:
             return SESSION_MODEL_ACTIVE
         if self._client is not None:
@@ -625,6 +641,7 @@ class SessionManager:
         return {
             "session_state": self.session_state,
             "current_model": self._current_model,
+            "requires_mcp_process_restart": self._requires_mcp_process_restart,
         }
 
     def success(self, message: str, data: Optional[dict[str, Any]] = None, **legacy: Any) -> dict[str, Any]:
@@ -648,7 +665,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         self._last_error_code = error_code
         if self._client is None:
-            self._state = SESSION_RECOVERABLE_ERROR
+            self._state = SESSION_RESTART_REQUIRED if self._requires_mcp_process_restart else SESSION_RECOVERABLE_ERROR
         result = {
             "success": False,
             "error_code": error_code,
@@ -673,17 +690,64 @@ class SessionManager:
     ) -> dict:
         """Start a COMSOL client session."""
         if self._client is not None:
-            try:
-                self._client.clear()
-                self._models.clear()
-                self._current_model = None
-                return self.success(
-                    "Cleared existing session and ready.",
-                    data=_safe_client_info(self._client, self._server),
-                    **_safe_client_info(self._client, self._server),
+            requested_port = port
+            active_port = self._connection_port if self._connection_port is not None else getattr(self._client, "port", None)
+            active_mode = self._connection_mode
+            active_version = self._connection_version
+            conflicts = {}
+            if active_mode and mode != active_mode:
+                conflicts["mode"] = {"active": active_mode, "requested": mode}
+            if active_version and version and version != active_version:
+                conflicts["version"] = {"active": active_version, "requested": version}
+            if (
+                requested_port not in (None, 0)
+                and active_port not in (None, 0)
+                and int(requested_port) != int(active_port)
+            ):
+                conflicts["port"] = {"active": active_port, "requested": requested_port}
+            if conflicts:
+                return self.error(
+                    "already_connected_different_session",
+                    "COMSOL session is already active with different start parameters. "
+                    "Call comsol_disconnect before starting a different session.",
+                    data={
+                        "connected": True,
+                        "conflicts": conflicts,
+                        "active": self._connection_metadata(),
+                        "requested": {
+                            "mode": mode,
+                            "version": version,
+                            "cores": cores,
+                            "port": port,
+                            "redirect_user_dirs": redirect_user_dirs,
+                            "login_mode": login_mode,
+                        },
+                    },
+                    connected=True,
+                    idempotent=False,
                 )
-            except Exception as e:
-                return self.error("comsol_api_error", f"Failed to clear existing session: {e}")
+            info = {
+                "connected": True,
+                "idempotent": True,
+                "active": self._connection_metadata(),
+            }
+            info.update(_safe_client_info(self._client, self._server, host=self._connection_host))
+            return self.success(
+                "COMSOL session already active; reusing existing MPh client.",
+                data=info,
+                **info,
+            )
+        if self._requires_mcp_process_restart:
+            return self.error(
+                "mph_client_already_instantiated",
+                "MPh reports that a client was already instantiated in this Python process. "
+                "Restart the HY-COMSOL-MCP server process to recover.",
+                data={
+                    "requires_mcp_process_restart": True,
+                    "recovery": "restart_hy_comsol_mcp_server_process",
+                },
+                requires_mcp_process_restart=True,
+            )
         if mode not in ("client-server", "stand-alone"):
             return self.error("invalid_argument", f"Unsupported COMSOL start mode: {mode}")
         if login_mode not in ALLOWED_LOGIN_MODES:
@@ -715,8 +779,18 @@ class SessionManager:
                     login_mode=login_mode,
                 )
                 self._client = mph.Client(cores=cores, version=version, port=self._server.port)
+                self._connection_host = DEFAULT_CONNECT_HOST
+                self._connection_port = getattr(self._server, "port", None)
+                self._server_owned = True
             else:
                 self._client = mph.Client(cores=cores, version=version)
+                self._connection_host = None
+                self._connection_port = getattr(self._client, "port", None)
+                self._server_owned = False
+            self._connection_mode = mode
+            self._connection_version = version or getattr(self._client, "version", None)
+            self._connection_cores = cores
+            self._requires_mcp_process_restart = False
             self._state = SESSION_CONNECTED
             info = {
                 "mode": mode,
@@ -732,7 +806,11 @@ class SessionManager:
             )
         except Exception as e:
             self._client = None
-            self._state = SESSION_RECOVERABLE_ERROR
+            if _is_mph_single_client_error(e):
+                self._requires_mcp_process_restart = True
+                self._state = SESSION_RESTART_REQUIRED
+            else:
+                self._state = SESSION_RECOVERABLE_ERROR
             server_diagnostics = {
                 "command": getattr(e, "command", None),
                 "last_output_lines": getattr(e, "output_lines", []),
@@ -775,6 +853,7 @@ class SessionManager:
                     "server_diagnostics": server_diagnostics,
                     "directories": directories,
                     "login_properties": _login_properties_report(),
+                    "requires_mcp_process_restart": self._requires_mcp_process_restart,
                 },
                 failure_category=failure_category,
                 failure_report=str(report_path),
@@ -784,6 +863,7 @@ class SessionManager:
                 server_diagnostics=server_diagnostics,
                 directories=directories,
                 login_properties=_login_properties_report(),
+                requires_mcp_process_restart=self._requires_mcp_process_restart,
             )
     
     def connect(self, port: int, host: str = "localhost") -> dict:
@@ -821,6 +901,11 @@ class SessionManager:
             self._state = SESSION_CONNECTED
             self._connection_host = host
             self._connection_port = port
+            self._connection_mode = "client-server"
+            self._connection_version = getattr(self._client, "version", None)
+            self._connection_cores = None
+            self._server_owned = False
+            self._requires_mcp_process_restart = False
             return self.success(
                 "Connected. Use comsol_status for detailed client info.",
                 data={"connected": True, "port": port, "host": host},
@@ -829,6 +914,9 @@ class SessionManager:
                 host=host,
             )
         except Exception as e:
+            if _is_mph_single_client_error(e):
+                self._requires_mcp_process_restart = True
+                self._state = SESSION_RESTART_REQUIRED
             error_code = _classify_connect_failure(e)
             failure_category = _classify_start_failure(
                     e,
@@ -843,9 +931,11 @@ class SessionManager:
                     "host": host,
                     "port": port,
                     "login_properties": _login_properties_report(),
+                    "requires_mcp_process_restart": self._requires_mcp_process_restart,
                 },
                 failure_category=failure_category,
                 login_properties=_login_properties_report(),
+                requires_mcp_process_restart=self._requires_mcp_process_restart,
             )
     
     def disconnect(self) -> dict:
@@ -869,6 +959,10 @@ class SessionManager:
         self._current_model = None
         self._connection_host = None
         self._connection_port = None
+        self._connection_mode = None
+        self._connection_version = None
+        self._connection_cores = None
+        self._server_owned = False
         if self._server is not None:
             try:
                 if not hasattr(self._server, "running") or self._server.running():
@@ -879,14 +973,23 @@ class SessionManager:
             finally:
                 self._server = None
         self._state = SESSION_DISCONNECTED
-        return self.success("; ".join(messages) or "Session cleared and disconnected.")
+        note = (
+            " JPype/MPh global client state may still require restarting the MCP server process."
+            if self._requires_mcp_process_restart
+            else ""
+        )
+        return self.success(("; ".join(messages) or "Session cleared and disconnected.") + note)
     
     def get_status(self) -> dict:
         """Get current session status."""
         if self._client is None:
             return self.success(
                 "No active COMSOL session.",
-                data={"connected": False},
+                data={
+                    "connected": False,
+                    "requires_mcp_process_restart": self._requires_mcp_process_restart,
+                    "connection": self._connection_metadata(),
+                },
                 connected=False,
             )
         
@@ -902,6 +1005,8 @@ class SessionManager:
             **_safe_client_info(self._client, self._server, host=self._connection_host),
             "models": model_list,
             "current_model": self._current_model,
+            "connection": self._connection_metadata(),
+            "requires_mcp_process_restart": self._requires_mcp_process_restart,
         }
         return self.success(
             "COMSOL session is connected.",
@@ -909,6 +1014,16 @@ class SessionManager:
             connected=True,
             **info,
         )
+
+    def _connection_metadata(self) -> dict[str, Any]:
+        return {
+            "mode": self._connection_mode,
+            "host": self._connection_host,
+            "port": self._connection_port,
+            "version": self._connection_version,
+            "cores": self._connection_cores,
+            "server_owned": self._server_owned,
+        }
     
     def add_model(self, model: mph.Model) -> str:
         """Add a model to tracking."""

@@ -1,6 +1,7 @@
 """Basic tests for COMSOL MCP Server."""
 
 import pytest
+import os
 
 
 class TestVersioning:
@@ -65,6 +66,11 @@ class TestSessionManager:
         sm._state = "disconnected"
         sm._connection_host = None
         sm._connection_port = None
+        sm._connection_mode = None
+        sm._connection_version = None
+        sm._connection_cores = None
+        sm._server_owned = False
+        sm._requires_mcp_process_restart = False
         sm._last_error_code = None
         return sm
     
@@ -282,6 +288,47 @@ class TestSessionManager:
 
         assert result["success"] is False
         assert result["error_code"] == "mph_client_already_instantiated"
+        assert result["requires_mcp_process_restart"] is True
+        assert result["session_state"] == "restart_required"
+
+    def test_start_mph_single_client_error_requires_restart(self, monkeypatch, tmp_path):
+        import src.tools.session as session
+
+        class DummyServer:
+            port = 45123
+            command = ["comsolmphserver"]
+            output_lines = ["started"]
+
+            def running(self):
+                return True
+
+            def stop(self, timeout=5):
+                return None
+
+        monkeypatch.setattr(session, "DEFAULT_RUNTIME_ROOT", tmp_path / "runtime")
+        monkeypatch.setattr(
+            session,
+            "_start_local_comsol_server",
+            lambda **kwargs: DummyServer(),
+        )
+        monkeypatch.setattr(
+            session.mph,
+            "Client",
+            lambda **kwargs: (_ for _ in ()).throw(
+                NotImplementedError("Only one client can be instantiated per Python session")
+            ),
+        )
+        sm = self.reset_session_manager()
+
+        result = sm.start(cores=2, version="6.4")
+        retry = sm.start(cores=2, version="6.4")
+
+        assert result["success"] is False
+        assert result["error_code"] == "mph_client_already_instantiated"
+        assert result["requires_mcp_process_restart"] is True
+        assert result["session_state"] == "restart_required"
+        assert retry["error_code"] == "mph_client_already_instantiated"
+        assert retry["data"]["recovery"] == "restart_hy_comsol_mcp_server_process"
 
     def test_startup_preflight_recommends_preferred_open_port(self, monkeypatch):
         import src.tools.session as session
@@ -365,6 +412,86 @@ class TestSessionManager:
         assert calls["server"]["login_mode"] == "auto"
         assert "-prefsdir" in calls["server"]["arguments"]
         assert calls["server"]["arguments"][1] == str(tmp_path / "runtime" / "prefs")
+
+    def test_start_is_idempotent_when_session_exists(self, monkeypatch, tmp_path):
+        import src.tools.session as session
+
+        calls = {"client": 0}
+
+        class DummyServer:
+            port = 45123
+
+            def running(self):
+                return True
+
+        class DummyClient:
+            version = "6.4"
+            standalone = False
+            port = 45123
+            host = "localhost"
+
+            @property
+            def cores(self):
+                return 2
+
+            def names(self):
+                return ["kept_model"]
+
+        monkeypatch.setattr(session, "DEFAULT_RUNTIME_ROOT", tmp_path / "runtime")
+        monkeypatch.setattr(session, "_start_local_comsol_server", lambda **kwargs: DummyServer())
+
+        def make_client(**kwargs):
+            calls["client"] += 1
+            return DummyClient()
+
+        monkeypatch.setattr(session.mph, "Client", make_client)
+        sm = self.reset_session_manager()
+        sm._models["kept_model"] = object()
+        sm._current_model = "kept_model"
+
+        first = sm.start(cores=2, version="6.4")
+        second = sm.start(cores=2, version="6.4", port=45123)
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert second["idempotent"] is True
+        assert calls["client"] == 1
+        assert sm._current_model == "kept_model"
+
+    def test_start_rejects_conflicting_active_session(self, monkeypatch, tmp_path):
+        import src.tools.session as session
+
+        class DummyServer:
+            port = 45123
+
+            def running(self):
+                return True
+
+        class DummyClient:
+            version = "6.4"
+            standalone = False
+            port = 45123
+            host = "localhost"
+
+            @property
+            def cores(self):
+                return 2
+
+            def names(self):
+                return []
+
+        monkeypatch.setattr(session, "DEFAULT_RUNTIME_ROOT", tmp_path / "runtime")
+        monkeypatch.setattr(session, "_start_local_comsol_server", lambda **kwargs: DummyServer())
+        monkeypatch.setattr(session.mph, "Client", lambda **kwargs: DummyClient())
+        sm = self.reset_session_manager()
+
+        assert sm.start(cores=2, version="6.4")["success"] is True
+        result = sm.start(cores=2, version="6.3", port=2037)
+
+        assert result["success"] is False
+        assert result["error_code"] == "already_connected_different_session"
+        assert "version" in result["data"]["conflicts"]
+        assert "port" in result["data"]["conflicts"]
 
     def test_start_passes_login_mode(self, monkeypatch, tmp_path):
         import src.tools.session as session
@@ -523,6 +650,55 @@ class TestToolRegistry:
         assert "tool_registry_check" in report["registered_tools"]
         assert "comsol_connect" in report["registered_tools"]
         assert "model_create" in report["registered_tools"]
+        assert "server_runtime" not in report["data"]
+
+    def test_codex_profile_registers_foundation_tools_only(self):
+        from mcp.server.fastmcp import FastMCP
+
+        from src.server import CODEX_PROFILE, register_tools_for_profile
+
+        mcp = FastMCP("test")
+
+        report = register_tools_for_profile(mcp, CODEX_PROFILE)
+
+        assert report["success"] is True
+        assert "comsol_status" in report["registered_tools"]
+        assert "model_create" in report["registered_tools"]
+        assert "param_set" in report["registered_tools"]
+        assert "tool_registry_check" in report["registered_tools"]
+        assert "geometry_create" not in report["registered_tools"]
+        assert "physics_add" not in report["registered_tools"]
+        assert "results_evaluate" not in report["registered_tools"]
+
+    def test_runtime_lock_reclaims_stale_pid(self, monkeypatch, tmp_path):
+        import src.runtime_state as runtime_state
+
+        monkeypatch.setattr(runtime_state, "RUNTIME_ROOT", tmp_path)
+        monkeypatch.setattr(runtime_state, "LOCK_PATH", tmp_path / "server.lock")
+        monkeypatch.setattr(runtime_state, "STATE_PATH", tmp_path / "server_state.json")
+        monkeypatch.setattr(runtime_state, "_LOCK_HELD", False)
+        monkeypatch.setattr(runtime_state, "_pid_alive", lambda pid: False)
+        runtime_state.LOCK_PATH.write_text('{"pid": 999999, "server_instance_id": "old"}', encoding="utf-8")
+
+        info = runtime_state.acquire_server_lock()
+        runtime_state.release_server_lock()
+
+        assert info["acquired"] is True
+        assert info["pid"] == os.getpid()
+        assert not runtime_state.LOCK_PATH.exists()
+
+    def test_runtime_lock_rejects_live_pid(self, monkeypatch, tmp_path):
+        import src.runtime_state as runtime_state
+
+        monkeypatch.setattr(runtime_state, "RUNTIME_ROOT", tmp_path)
+        monkeypatch.setattr(runtime_state, "LOCK_PATH", tmp_path / "server.lock")
+        monkeypatch.setattr(runtime_state, "STATE_PATH", tmp_path / "server_state.json")
+        monkeypatch.setattr(runtime_state, "_LOCK_HELD", False)
+        monkeypatch.setattr(runtime_state, "_pid_alive", lambda pid: True)
+        runtime_state.LOCK_PATH.write_text('{"pid": 12345, "server_instance_id": "live"}', encoding="utf-8")
+
+        with pytest.raises(runtime_state.ServerAlreadyRunningError):
+            runtime_state.acquire_server_lock()
 
 
 class TestModelToolEnvelope:
@@ -539,6 +715,11 @@ class TestModelToolEnvelope:
         sm._state = "disconnected"
         sm._connection_host = None
         sm._connection_port = None
+        sm._connection_mode = None
+        sm._connection_version = None
+        sm._connection_cores = None
+        sm._server_owned = False
+        sm._requires_mcp_process_restart = False
         sm._last_error_code = None
         return sm
 
